@@ -1,13 +1,8 @@
 import tensorflow as tf
-import numpy as np
-import streamlit as st
-from data_preprocessing.data_preprocessing import preprocess_raw_data, scale_data, create_sequences, test_train_split
-from plotting.plotting import plot_lstm_results, plot_vae_results, plot_vae_training_loss, plot_lstm_training_loss
 
-# VAE-LSTM Model Definition
-class VAELSTM(tf.keras.Model):
-    def __init__(self, input_dim, latent_dim=2, hidden_dim=32, lstm_units=64):
-        super(VAELSTM, self).__init__()
+class VAELSTMHybrid(tf.keras.Model):
+    def __init__(self, input_dim, latent_dim=2, lstm_units=64, hidden_dim=32):
+        super(VAELSTMHybrid, self).__init__()
         self.latent_dim = latent_dim
 
         # VAE Encoder
@@ -23,14 +18,14 @@ class VAELSTM(tf.keras.Model):
             tf.keras.layers.InputLayer(input_shape=(latent_dim,)),
             tf.keras.layers.Dense(hidden_dim, activation='relu'),
             tf.keras.layers.Dense(hidden_dim, activation='relu'),
-            tf.keras.layers.Dense(input_dim, activation='sigmoid')
+            tf.keras.layers.Dense(input_dim, activation='sigmoid')  # Ensure output matches input_dim
         ])
 
-        # LSTM for Sequence Processing
+        # LSTM for Sequential Prediction
         self.lstm = tf.keras.Sequential([
-            tf.keras.layers.InputLayer(input_shape=(None, input_dim)),  # (time_steps, features)
+            tf.keras.layers.InputLayer(input_shape=(None, latent_dim)),  # (time_steps, latent_dim)
             tf.keras.layers.LSTM(lstm_units, return_sequences=False),
-            tf.keras.layers.Dense(1, activation='linear')  # Predicting a single value
+            tf.keras.layers.Dense(1)  # Predict a single value
         ])
 
     def encode(self, x):
@@ -47,45 +42,31 @@ class VAELSTM(tf.keras.Model):
         return self.decoder(z)
 
     def call(self, x, lstm_input=None):
-        # Reshape input for VAE processing
+        # VAE Encoding
         batch_size, time_steps, features = x.shape
         x_flat = tf.reshape(x, (-1, features))  # Flatten sequence dimension
-
-        # VAE
         z_mean, z_logvar = self.encode(x_flat)
         z = self.reparameterize(z_mean, z_logvar)
+
+        # LSTM Prediction
+        lstm_input = z  # Use the latent embeddings as LSTM input
+        if lstm_input is not None:
+            lstm_input = tf.reshape(lstm_input, (-1, time_steps, self.latent_dim))  # Adjust `time_steps` accordingly
+            lstm_output = self.lstm(lstm_input)
+        else:
+            lstm_output = None
+
+        # Decoding from predicted embedding
         x_recon = self.decode(z)
-
-        # Reshape reconstructed input back to sequence
-        x_recon = tf.reshape(x_recon, (batch_size, time_steps, features))
-
-        # LSTM
-        lstm_output = self.lstm(lstm_input) if lstm_input is not None else None
+        x_recon = tf.reshape(x_recon, (batch_size, time_steps, features))  # Reshape to match X_test
 
         return x_recon, z_mean, z_logvar, lstm_output
 
 
 def vae_lstm_loss(x, x_recon, z_mean, z_logvar, y_true, y_pred, beta=1.0):
-    """
-    Loss function for the VAE-LSTM model.
-
-    Parameters:
-        x: Original input tensor.
-        x_recon: Reconstructed input tensor.
-        z_mean: Latent mean tensor from VAE.
-        z_logvar: Latent log variance tensor from VAE.
-        y_true: True values for LSTM predictions.
-        y_pred: Predicted values from LSTM.
-        beta: Weight for the KL divergence term in the loss.
-
-    Returns:
-        Combined VAE-LSTM loss.
-    """
-    # Ensure consistent data types
+    # Ensure consistent data types for `x` and `x_recon`
     x = tf.cast(x, tf.float32)
     x_recon = tf.cast(x_recon, tf.float32)
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
 
     # VAE Reconstruction Loss
     recon_loss = tf.reduce_mean(tf.reduce_sum(tf.square(x - x_recon), axis=1))
@@ -95,14 +76,16 @@ def vae_lstm_loss(x, x_recon, z_mean, z_logvar, y_true, y_pred, beta=1.0):
         tf.reduce_sum(1 + z_logvar - tf.square(z_mean) - tf.exp(z_logvar), axis=1)
     )
 
-    # LSTM Loss (MSE)
+    # LSTM Loss
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
     lstm_loss = tf.reduce_mean(tf.square(y_true - y_pred))
 
-    # Combined Loss
     return recon_loss + beta * kl_loss + lstm_loss
 
-# Training the VAE-LSTM
-def train_vae_lstm(model, train_data, lstm_train_data, batch_size=64, epochs=30, learning_rate=1e-3):
+
+
+def train_vae_lstm_hybrid(model, train_data, lstm_train_data, batch_size=64, epochs=30, learning_rate=1e-3):
     optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     dataset = tf.data.Dataset.from_tensor_slices((train_data, lstm_train_data)).batch(batch_size)
 
@@ -118,4 +101,3 @@ def train_vae_lstm(model, train_data, lstm_train_data, batch_size=64, epochs=30,
             total_loss += loss.numpy()
 
         print(f"Epoch {epoch + 1}/{epochs}, Loss: {total_loss / (step + 1)}")
-

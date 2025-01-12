@@ -2,34 +2,46 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
+import pandas as pd
 
-def preprocess_raw_data(stock_data, market_data):
+
+def preprocess_raw_data(stock_data, market_data, window_size=7):
+    # Ensure datetime index and time zone consistency
     stock_data.index = pd.to_datetime(stock_data.index).tz_convert("US/Eastern")
     market_data.index = pd.to_datetime(market_data.index).tz_convert("US/Eastern")
 
+    # Calculate returns
     stock_data['Return'] = stock_data['Close'].pct_change() * 100
     market_data['Return'] = market_data['Close'].pct_change() * 100
+
+    # Calculate relative return
     stock_data['Relative Return'] = stock_data['Return'] - market_data['Return']
+
+    # Calculate volume change
     stock_data['Volume Change'] = stock_data['Volume'].pct_change() * 100
-    stock_data['Volatility'] = stock_data['Return'].rolling(window=7).std()
 
-    covariance = stock_data['Return'].rolling(window=35).cov(market_data['Return'])
-    market_variance = market_data['Return'].rolling(window=35).var()
-    stock_data['Beta'] = covariance / market_variance
+    # Calculate volatility
+    stock_data['Volatility'] = stock_data['Return'].rolling(window=window_size).std()
 
+    # Calculate market-relative volatility
+    stock_data['Market Relative Volatility'] = stock_data['Volatility'] / market_data['Return'].rolling(window=window_size).std()
+
+    # Aggregate into a clean DataFrame
     data = pd.DataFrame({
         'stock_return': stock_data['Return'],
         'market_return': market_data['Return'],
         'relative_return': stock_data['Relative Return'],
         'volume_change': stock_data['Volume Change'],
-        'volatility': stock_data[  'Volatility'],
-        'beta': stock_data['Beta']
+        'volatility': stock_data['Volatility'],
+        'market_relative_volatility': stock_data['Market Relative Volatility'],
     })
 
+    # Handle NaNs and infinite values
     data.replace([np.inf, -np.inf], np.nan, inplace=True)
     data.dropna(inplace=True)
 
     return data
+
 
 
 def scale_data(data):
@@ -48,7 +60,7 @@ def scale_data(data):
 import numpy as np
 
 
-def create_sequences(data, lookback=33, target_col=0):
+def create_sequences(data, lookback=35, target_col=0):
     """
     Create Seq2One sequences and capture date indices for each label (y).
 

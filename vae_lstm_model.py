@@ -3,75 +3,71 @@ import tensorflow as tf
 from data_preprocessing.data_preprocessing import preprocess_raw_data, scale_data, create_sequences, train_test_split
 from plotting.plotting import plot_lstm_results
 import streamlit as st
-from models.vae_lstm import VAELSTM, train_vae_lstm
+from models.vae_lstm import VAELSTMHybrid, train_vae_lstm_hybrid
 
 import numpy as np
 import tensorflow as tf
 
+import numpy as np
+import tensorflow as tf
+
+
 def detect_anomalies_vae_lstm(model, X_test, y_test, lstm_input, original_data, threshold_percentile=97):
-    """
-    Detect anomalies using the VAE-LSTM hybrid model.
-
-    Parameters:
-        model: Trained VAE-LSTM model.
-        X_test (np.ndarray): Test sequences for LSTM input.
-        y_test (np.ndarray): True values for next-step prediction.
-        lstm_input (np.ndarray): Test sequences for LSTM predictions (aligned with X_test).
-        original_data (pd.DataFrame): Original test data for context (aligned with y_test).
-        threshold_percentile (int): Percentile for anomaly detection thresholds.
-
-    Returns:
-        mse_vae (list): Reconstruction errors (VAE).
-        lstm_predictions (list): Predictions made by the LSTM.
-        combined_anomalies (np.ndarray): Boolean array for combined anomalies.
-    """
-    # Initialize lists for storing errors and predictions
+    log_likelihoods = []
     mse_vae = []
     lstm_predictions = []
     anomalies_vae = []
     anomalies_lstm = []
 
-    # Iterate through the test data to compute VAE and LSTM errors
     for i in range(len(X_test)):
-        # VAE reconstruction
+        # Pass input through the model
         x_recon, z_mean, z_logvar, lstm_output = model(X_test[i][np.newaxis, :], lstm_input=lstm_input[i][np.newaxis, :])
-        x_recon = x_recon.numpy()
-        lstm_output = lstm_output.numpy().flatten()[0]
+        x_recon = np.squeeze(x_recon, axis=0)  # Remove batch dimension
+        lstm_output = lstm_output.numpy().flatten()[0]  # Predicted next value
 
-        # Compute VAE reconstruction error (MSE)
+        # Compute reconstruction error (MSE)
         recon_error = np.mean(np.square(X_test[i] - x_recon))
         mse_vae.append(recon_error)
+
+        # Compute log likelihood
+        variance = tf.exp(z_logvar).numpy()
+        likelihood = -0.5 * np.sum(np.log(2 * np.pi * variance) + np.square(X_test[i] - np.squeeze(x_recon)) / variance)
+        log_likelihoods.append(likelihood)
 
         # Store LSTM predictions and compute prediction error
         lstm_predictions.append(lstm_output)
         lstm_error = np.square(y_test[i] - lstm_output)
 
-        # Identify anomalies for both VAE and LSTM
+        # Identify anomalies
         anomalies_vae.append(recon_error)
         anomalies_lstm.append(lstm_error)
 
-    # Calculate thresholds
+    # Threshold calculations
     vae_threshold = np.percentile(mse_vae, threshold_percentile)
+    likelihood_threshold = np.percentile(log_likelihoods, 100 - threshold_percentile)
     lstm_threshold = np.percentile(anomalies_lstm, threshold_percentile)
 
     # Mark anomalies
     vae_anomalies = np.array(mse_vae) > vae_threshold
+    likelihood_anomalies = np.array(log_likelihoods) < likelihood_threshold  # Low likelihood is anomalous
     lstm_anomalies = np.array(anomalies_lstm) > lstm_threshold
 
-    # Combine anomalies (logical OR)
-    combined_anomalies = np.logical_or(vae_anomalies, lstm_anomalies)
+    combined_anomalies = np.logical_or.reduce((vae_anomalies, likelihood_anomalies, lstm_anomalies))
 
-    # Optionally display anomaly statistics
-    print(f"VAE Threshold: {vae_threshold}, LSTM Threshold: {lstm_threshold}")
-    print(f"Total VAE Anomalies: {np.sum(vae_anomalies)}, Total LSTM Anomalies: {np.sum(lstm_anomalies)}")
+    print(f"VAE Reconstruction Threshold: {vae_threshold}")
+    print(f"Log Likelihood Threshold: {likelihood_threshold}")
+    print(f"LSTM Prediction Threshold: {lstm_threshold}")
+    print(f"Total VAE Anomalies: {np.sum(vae_anomalies)}")
+    print(f"Total Log Likelihood Anomalies: {np.sum(likelihood_anomalies)}")
+    print(f"Total LSTM Anomalies: {np.sum(lstm_anomalies)}")
     print(f"Combined Anomalies: {np.sum(combined_anomalies)}")
 
-    return mse_vae, lstm_predictions, combined_anomalies
+    return log_likelihoods, mse_vae, lstm_predictions, combined_anomalies
 
 
 import pandas as pd
 
-def run_vae_lstm_detection_pipeline(stock_data, market_data, lookback=33, latent_dim=2, lstm_units=64, epochs=30):
+def run_vae_lstm_detection_pipeline(stock_data, market_data, lookback=33, latent_dim=2, lstm_units=64, epochs=10):
     """
     End-to-end pipeline for VAE-LSTM hybrid anomaly detection.
 
@@ -96,7 +92,7 @@ def run_vae_lstm_detection_pipeline(stock_data, market_data, lookback=33, latent
 
     # --- 2) Create Sequences ---
     st.write("Creating sequences for LSTM...")
-    X, y, y_dates = create_sequences(data_scaled_df, lookback=33)  # X shape: (samples, time_steps, features)
+    X, y, y_dates = create_sequences(data_scaled_df, lookback=lookback)  # X shape: (samples, time_steps, features)
 
     # --- 3) Train/Test Split ---
     X_train, X_test, y_train, y_test, dates_train, dates_test = train_test_split(
@@ -106,21 +102,19 @@ def run_vae_lstm_detection_pipeline(stock_data, market_data, lookback=33, latent
     # --- 4) Initialize VAE-LSTM Model ---
     st.write("Initializing VAE-LSTM model...")
     input_dim = X_train.shape[2]
-    model = VAELSTM(input_dim=input_dim, latent_dim=latent_dim, lstm_units=lstm_units)
+    model = VAELSTMHybrid(input_dim=input_dim, latent_dim=latent_dim, lstm_units=lstm_units)
 
     # --- 5) Train the Model ---
     st.write("Training VAE-LSTM model...")
-    train_vae_lstm(model, X_train, X_train, epochs=epochs)
+    train_vae_lstm_hybrid(model, X_train, X_train, epochs=epochs)
 
-    # --- 6) Detect Anomalies ---
+    # --- Detect Anomalies ---
     st.write("Detecting anomalies...")
-    mse_vae, lstm_predictions, combined_anomalies = detect_anomalies_vae_lstm(
+    log_likelihoods, mse_vae, lstm_predictions, combined_anomalies = detect_anomalies_vae_lstm(
         model, X_test, y_test, X_test, data.iloc[len(X_train):], threshold_percentile=97
     )
 
-    # --- 7) Visualize Results ---
+    # --- Visualize Results ---
     st.write("Visualizing results...")
-    plot_lstm_results(
-        data, dates_test, y_test, lstm_predictions, combined_anomalies, combined_anomalies, mse_vae
-    )
+    plot_lstm_results(data, dates_test, y_test, combined_anomalies, mse_vae)
 

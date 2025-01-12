@@ -1,6 +1,6 @@
 import streamlit as st
 import os
-from lstm_model import run_lstm_detection_pipeline
+from lstm_pipeline import run_lstm_detection_pipeline
 from utils.utils import fetch_data
 from vae_model import run_vae_detection_pipeline
 from vae_lstm_model import run_vae_lstm_detection_pipeline

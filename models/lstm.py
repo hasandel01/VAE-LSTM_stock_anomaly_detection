@@ -7,7 +7,7 @@ import tensorflow.keras.layers as layers
 import numpy as np
 
 
-def build_lstm_model(input_shape, units=64, dense_units=32, learning_rate=1e-3):
+def build_lstm_model(input_shape, units=64, dense_units=32, learning_rate=1e-5):
     """
     Build a simple LSTM model for next-step prediction (Seq2One) with dynamic hyperparameters.
     input_shape: (lookback, num_features)
@@ -32,7 +32,7 @@ def build_lstm_model(input_shape, units=64, dense_units=32, learning_rate=1e-3):
 from tensorflow.keras.callbacks import EarlyStopping
 
 
-def train_lstm_model(model, X_train, y_train, epochs=30, batch_size=64, patience=5):
+def train_lstm_model(model, X_train, y_train, epochs=40, batch_size=64, patience=5):
     """
     Trains the LSTM model with EarlyStopping to prevent overfitting.
 
@@ -49,9 +49,10 @@ def train_lstm_model(model, X_train, y_train, epochs=30, batch_size=64, patience
     """
     # EarlyStopping callback
     early_stopping = EarlyStopping(
-        monitor='val_loss',  # Monitor validation loss
-        patience=patience,  # Number of epochs to wait for improvement
-        restore_best_weights=True  # Restore the best weights after stopping
+        monitor='val_loss',
+        patience=3,
+        restore_best_weights=True,
+        verbose=1  # Verbose logs when training stops
     )
 
     # Train the model
@@ -59,7 +60,7 @@ def train_lstm_model(model, X_train, y_train, epochs=30, batch_size=64, patience
         X_train, y_train,
         epochs=epochs,
         batch_size=batch_size,
-        validation_split=0.1,  # Use 10% of the training data for validation
+        validation_split=0.2,  # Use 10% of the training data for validation
         callbacks=[early_stopping],  # Add EarlyStopping
         verbose=1
     )
